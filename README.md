@@ -1,5 +1,7 @@
 🌱 Smart Cultivation System
 
+[![Live Demo](https://img.shields.io/badge/Live-Demo-green?style=for-the-badge&logo=google-chrome&logoColor=white)](https://smart-cultivation.kesug.com)
+
 
 
 
