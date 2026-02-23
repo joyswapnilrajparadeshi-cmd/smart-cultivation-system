@@ -1,0 +1,2512 @@
+<?php
+session_start();
+require 'db_connection.php';
+$crops_kb_stmt = $conn->prepare("
+    SELECT DISTINCT crop_name 
+    FROM knowledge_base 
+    ORDER BY crop_name ASC
+");
+$crops_kb_stmt->execute();
+$crops_kb_result = $crops_kb_stmt->get_result();
+
+$kb_crops = [];
+while($row = $crops_kb_result->fetch_assoc()){
+    $kb_crops[] = $row['crop_name'];
+}
+$crops_kb_stmt->close();
+
+
+if(!isset($_SESSION['user_id']) || $_SESSION['role'] != 'farmer'){
+    header("Location: login.php");
+    exit;
+}
+
+// Fetch user data
+$stmt = $conn->prepare("SELECT * FROM users WHERE id=?");
+$stmt->bind_param("i", $_SESSION['user_id']);
+$stmt->execute();
+$user = $stmt->get_result()->fetch_assoc();
+$stmt->close();
+
+// Fetch crops for this farmer
+$crops_stmt = $conn->prepare("SELECT crop_name, growth_stage FROM farmer_crops WHERE user_id=?");
+$crops_stmt->bind_param("i", $_SESSION['user_id']);
+$crops_stmt->execute();
+$crops_result = $crops_stmt->get_result();
+$farmer_crops = [];
+while($row = $crops_result->fetch_assoc()){
+    $farmer_crops[] = $row;
+}
+$crops_stmt->close();
+
+// Fetch notifications
+$notif_stmt = $conn->prepare("SELECT id, crop_name, message, notify_date, status FROM crop_notifications WHERE user_id=? ORDER BY notify_date DESC");
+$notif_stmt->bind_param("i", $_SESSION['user_id']);
+$notif_stmt->execute();
+$notif_result = $notif_stmt->get_result();
+$notifications = [];
+while($row = $notif_result->fetch_assoc()){
+    $notifications[] = $row;
+}
+$notif_stmt->close();
+
+// Fetch knowledge base
+$kb_stmt = $conn->prepare("
+    SELECT title, description, crop_name, created_at
+    FROM knowledge_base
+    ORDER BY created_at DESC
+");
+$kb_stmt->execute();
+$kb_result = $kb_stmt->get_result();
+$knowledge_items = [];
+while($row = $kb_result->fetch_assoc()){
+    $knowledge_items[] = $row;
+}
+$kb_stmt->close();
+
+// Language toggle
+if(isset($_GET['lang'])){
+    $_SESSION['lang'] = $_GET['lang'];
+    header("Location: farmer_dashboard.php");
+    exit;
+}
+
+$lang = $_SESSION['lang'] ?? 'en';
+$translations = include "languages/$lang.php";
+?>
+<!DOCTYPE html>
+<html lang="<?php echo $lang; ?>">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title><?php echo $translations['farmer_dashboard'] ?? 'Farmer Dashboard'; ?> | Smart Cultivation System</title>
+
+<!-- Google Fonts -->
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=Poppins:wght@400;500;600;700&display=swap" rel="stylesheet">
+<!-- Font Awesome -->
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+<!-- Leaflet CSS -->
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+
+<style>
+/* Reset & Base */
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+}
+
+:root {
+    --primary-green: #2d8659;
+    --primary-green-dark: #1f5d3f;
+    --primary-green-light: #3da372;
+    --secondary-green: #4caf50;
+    --accent-orange: #ff9800;
+    --accent-yellow: #ffc107;
+    --text-dark: #2c3e50;
+    --text-light: #5a6c7d;
+    --bg-light: #f8f9fa;
+    --bg-white: #ffffff;
+    --border-color: #e0e0e0;
+    --sidebar-bg: #1f5d3f;
+    --sidebar-hover: #2d8659;
+    --shadow-sm: 0 2px 8px rgba(0,0,0,0.08);
+    --shadow-md: 0 4px 16px rgba(0,0,0,0.12);
+    --shadow-lg: 0 8px 32px rgba(0,0,0,0.16);
+    --transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+body {
+    font-family: 'Inter', 'Poppins', sans-serif;
+    background: linear-gradient(135deg, #f5f7fa 0%, #e8f5e9 100%);
+    min-height: 100vh;
+    color: var(--text-dark);
+    line-height: 1.6;
+    overflow-x: hidden;
+}
+
+/* Background Pattern */
+body::before {
+    content: "";
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background-image: 
+        radial-gradient(circle at 20% 50%, rgba(45, 134, 89, 0.03) 0%, transparent 50%),
+        radial-gradient(circle at 80% 80%, rgba(76, 175, 80, 0.03) 0%, transparent 50%),
+        radial-gradient(circle at 40% 20%, rgba(255, 152, 0, 0.02) 0%, transparent 50%);
+    z-index: 0;
+    pointer-events: none;
+}
+
+/* Floating Background Icons */
+.icon-bg {
+    position: fixed;
+    font-size: 3rem;
+    color: rgba(45, 134, 89, 0.05);
+    animation: floatBg 20s linear infinite;
+    z-index: 0;
+    pointer-events: none;
+}
+.icon-bg:nth-child(1) { top: 10%; left: 5%; animation-duration: 25s; }
+.icon-bg:nth-child(2) { top: 30%; right: 8%; animation-duration: 20s; }
+.icon-bg:nth-child(3) { bottom: 20%; left: 10%; animation-duration: 30s; }
+.icon-bg:nth-child(4) { top: 50%; left: 50%; animation-duration: 22s; }
+.icon-bg:nth-child(5) { bottom: 10%; right: 15%; animation-duration: 28s; }
+
+@keyframes floatBg {
+    0% { transform: translateY(0) rotate(0deg) scale(1); }
+    33% { transform: translateY(-30px) rotate(120deg) scale(1.1); }
+    66% { transform: translateY(-60px) rotate(240deg) scale(0.9); }
+    100% { transform: translateY(0) rotate(360deg) scale(1); }
+}
+
+/* Dashboard Layout */
+.dashboard {
+    display: flex;
+    min-height: 100vh;
+    position: relative;
+    z-index: 1;
+}
+
+/* Hamburger Menu Button */
+.menu-toggle {
+    display: none;
+    position: fixed;
+    top: 20px;
+    left: 20px;
+    z-index: 1001;
+    background: var(--primary-green);
+    color: white;
+    border: none;
+    width: 50px;
+    height: 50px;
+    border-radius: 12px;
+    cursor: pointer;
+    align-items: center;
+    justify-content: center;
+    box-shadow: var(--shadow-md);
+    transition: var(--transition);
+    pointer-events: auto !important;
+    touch-action: manipulation;
+    -webkit-tap-highlight-color: rgba(255, 255, 255, 0.3);
+    -webkit-user-select: none;
+    user-select: none;
+}
+
+.menu-toggle:active {
+    transform: scale(0.95);
+    background: var(--primary-green-dark);
+}
+
+.menu-toggle:hover {
+    background: var(--primary-green-dark);
+    transform: scale(1.05);
+}
+
+.menu-toggle i {
+    font-size: 24px;
+}
+
+/* Sidebar Overlay */
+.sidebar-overlay {
+    display: none;
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background: rgba(0, 0, 0, 0.5);
+    z-index: 998;
+    animation: fadeIn 0.3s ease-out;
+    pointer-events: auto;
+}
+
+.sidebar-overlay.active {
+    display: block;
+}
+
+/* Ensure overlay doesn't block sidebar clicks */
+@media (max-width: 768px) {
+    .sidebar-overlay.active {
+        pointer-events: auto;
+    }
+    
+    /* Sidebar should be above overlay and clickable */
+    .sidebar.active {
+        pointer-events: auto !important;
+    }
+}
+
+/* Sidebar */
+.sidebar {
+    width: 280px;
+    background: var(--sidebar-bg);
+    padding: 30px 20px;
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+    box-shadow: var(--shadow-lg);
+    position: sticky;
+    top: 0;
+    height: 100vh;
+    overflow-y: auto;
+    animation: slideInLeft 0.5s ease-out;
+    z-index: 1000;
+}
+
+@keyframes slideInLeft {
+    from {
+        transform: translateX(-100%);
+        opacity: 0;
+    }
+    to {
+        transform: translateX(0);
+        opacity: 1;
+    }
+}
+
+.sidebar h2 {
+    font-size: 1.5rem;
+    font-weight: 800;
+    color: white;
+    margin-bottom: 30px;
+    text-align: center;
+    padding-bottom: 20px;
+    border-bottom: 2px solid rgba(255,255,255,0.2);
+    animation: fadeInDown 0.6s ease-out;
+}
+
+@keyframes fadeInDown {
+    from {
+        opacity: 0;
+        transform: translateY(-20px);
+    }
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+
+.sidebar a {
+    color: rgba(255,255,255,0.9);
+    text-decoration: none;
+    padding: 14px 18px;
+    border-radius: 12px;
+    margin: 8px 0;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    transition: var(--transition);
+    font-weight: 500;
+    position: relative;
+    overflow: hidden;
+}
+
+.sidebar a::before {
+    content: "";
+    position: absolute;
+    left: 0;
+    top: 0;
+    width: 4px;
+    height: 100%;
+    background: var(--secondary-green);
+    transform: scaleY(0);
+    transition: var(--transition);
+}
+
+.sidebar a:hover,
+.sidebar a.active {
+    background: var(--sidebar-hover);
+    color: white;
+    transform: translateX(5px);
+    box-shadow: var(--shadow-sm);
+}
+
+.sidebar a:hover::before,
+.sidebar a.active::before {
+    transform: scaleY(1);
+}
+
+.sidebar a i {
+    font-size: 18px;
+    width: 24px;
+    text-align: center;
+}
+
+.sidebar .lang-switch {
+    text-align: center;
+    padding-top: 20px;
+    border-top: 1px solid rgba(255,255,255,0.2);
+    margin-top: 20px;
+}
+
+.sidebar .lang-switch a {
+    display: inline-flex;
+    margin: 0 5px;
+    padding: 8px 16px;
+    border-radius: 8px;
+    background: rgba(255,255,255,0.1);
+    font-size: 13px;
+    justify-content: center;
+}
+
+.sidebar .lang-switch a:hover,
+.sidebar .lang-switch a.active {
+    background: var(--secondary-green);
+    transform: scale(1.05);
+}
+
+.logout-btn {
+    width: 100%;
+    margin-top: 20px;
+    padding: 14px;
+    border: none;
+    border-radius: 12px;
+    background: linear-gradient(135deg, #e74c3c, #c0392b);
+    color: white;
+    font-weight: 600;
+    cursor: pointer;
+    transition: var(--transition);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 10px;
+    box-shadow: var(--shadow-sm);
+}
+
+.logout-btn:hover {
+    background: linear-gradient(135deg, #c0392b, #a93226);
+    transform: translateY(-2px);
+    box-shadow: var(--shadow-md);
+}
+
+/* Main Content */
+.main {
+    flex: 1;
+    padding: 40px;
+    overflow-y: auto;
+    animation: fadeIn 0.6s ease-out;
+}
+
+@keyframes fadeIn {
+    from { opacity: 0; }
+    to { opacity: 1; }
+}
+
+/* Header */
+.header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 40px;
+    padding: 30px;
+    background: white;
+    border-radius: 16px;
+    box-shadow: var(--shadow-sm);
+    animation: slideInDown 0.6s ease-out;
+}
+
+@keyframes slideInDown {
+    from {
+        opacity: 0;
+        transform: translateY(-30px);
+    }
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+
+.header h1 {
+    font-size: 2rem;
+    font-weight: 800;
+    color: var(--primary-green-dark);
+    letter-spacing: -0.02em;
+}
+
+.header .welcome {
+    font-size: 1rem;
+    color: var(--text-light);
+    background: var(--bg-light);
+    padding: 8px 16px;
+    border-radius: 20px;
+}
+
+/* Dashboard Cards */
+.cards {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+    gap: 24px;
+    margin-bottom: 40px;
+}
+
+.card {
+    background: white;
+    padding: 30px;
+    border-radius: 16px;
+    text-align: center;
+    box-shadow: var(--shadow-sm);
+    transition: var(--transition);
+    border: 2px solid transparent;
+    cursor: pointer;
+    position: relative;
+    overflow: hidden;
+    animation: fadeInUp 0.6s ease-out;
+    animation-fill-mode: both;
+}
+
+.card:nth-child(1) { animation-delay: 0.1s; }
+.card:nth-child(2) { animation-delay: 0.2s; }
+.card:nth-child(3) { animation-delay: 0.3s; }
+.card:nth-child(4) { animation-delay: 0.4s; }
+
+@keyframes fadeInUp {
+    from {
+        opacity: 0;
+        transform: translateY(30px);
+    }
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+
+.card::before {
+    content: "";
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 4px;
+    background: linear-gradient(90deg, var(--primary-green), var(--secondary-green));
+    transform: scaleX(0);
+    transition: var(--transition);
+}
+
+.card:hover {
+    transform: translateY(-8px);
+    box-shadow: var(--shadow-lg);
+    border-color: var(--primary-green-light);
+}
+
+.card:hover::before {
+    transform: scaleX(1);
+}
+
+.card i {
+    font-size: 3rem;
+    color: var(--primary-green);
+    margin-bottom: 16px;
+    transition: var(--transition);
+}
+
+.card:hover i {
+    transform: scale(1.2) rotate(5deg);
+    color: var(--secondary-green);
+}
+
+.card h3 {
+    font-size: 1.1rem;
+    font-weight: 700;
+    color: var(--text-dark);
+    margin-top: 12px;
+}
+
+/* Sections */
+.section {
+    margin-bottom: 40px;
+    background: white;
+    padding: 30px;
+    border-radius: 16px;
+    box-shadow: var(--shadow-sm);
+    animation: fadeInUp 0.6s ease-out;
+}
+
+.section h2 {
+    font-size: 1.8rem;
+    font-weight: 800;
+    color: var(--primary-green-dark);
+    margin-bottom: 24px;
+    padding-bottom: 16px;
+    border-bottom: 3px solid var(--bg-light);
+    position: relative;
+}
+
+.section h2::after {
+    content: "";
+    position: absolute;
+    bottom: -3px;
+    left: 0;
+    width: 60px;
+    height: 3px;
+    background: var(--primary-green);
+    animation: expandWidth 0.6s ease-out;
+}
+
+@keyframes expandWidth {
+    from { width: 0; }
+    to { width: 60px; }
+}
+
+/* Lists */
+.crop-list,
+.notification-list,
+.knowledge-list {
+    list-style: none;
+}
+
+.crop-list li,
+.notification-list li,
+.knowledge-list li {
+    padding: 16px 20px;
+    margin-bottom: 12px;
+    background: var(--bg-light);
+    border-radius: 12px;
+    transition: var(--transition);
+    border-left: 4px solid transparent;
+    animation: slideInRight 0.4s ease-out;
+    animation-fill-mode: both;
+}
+
+.crop-list li:nth-child(1) { animation-delay: 0.1s; }
+.crop-list li:nth-child(2) { animation-delay: 0.2s; }
+.crop-list li:nth-child(3) { animation-delay: 0.3s; }
+.crop-list li:nth-child(4) { animation-delay: 0.4s; }
+.crop-list li:nth-child(5) { animation-delay: 0.5s; }
+
+@keyframes slideInRight {
+    from {
+        opacity: 0;
+        transform: translateX(-20px);
+    }
+    to {
+        opacity: 1;
+        transform: translateX(0);
+    }
+}
+
+.crop-list li:hover,
+.knowledge-list li:hover {
+    background: #e8f5e9;
+    border-left-color: var(--primary-green);
+    transform: translateX(5px);
+    box-shadow: var(--shadow-sm);
+}
+
+/* Notifications */
+.notification-list li.unread {
+    background: #fff3cd;
+    border-left-color: var(--accent-yellow);
+    animation: pulse 2s ease-in-out infinite;
+}
+
+@keyframes pulse {
+    0%, 100% { box-shadow: 0 0 0 0 rgba(255, 193, 7, 0.4); }
+    50% { box-shadow: 0 0 0 8px rgba(255, 193, 7, 0); }
+}
+
+.notification-list li.unread:hover {
+    background: #ffe69c;
+}
+
+.mark-btn {
+    margin-left: 12px;
+    padding: 6px 14px;
+    border: none;
+    border-radius: 8px;
+    background: var(--secondary-green);
+    color: white;
+    cursor: pointer;
+    font-size: 12px;
+    font-weight: 600;
+    transition: var(--transition);
+}
+
+.mark-btn:hover {
+    background: var(--primary-green);
+    transform: scale(1.05);
+}
+
+/* Buttons */
+.btn-add-crop,
+.btn-update-stage {
+    display: inline-flex;
+    align-items: center;
+    gap: 10px;
+    padding: 14px 24px;
+    margin: 0 12px 16px 0;
+    font-weight: 600;
+    font-size: 15px;
+    text-decoration: none;
+    color: white;
+    border-radius: 12px;
+    border: none;
+    cursor: pointer;
+    transition: var(--transition);
+    box-shadow: var(--shadow-sm);
+    position: relative;
+    overflow: hidden;
+}
+
+.btn-add-crop {
+    background: linear-gradient(135deg, var(--secondary-green), var(--primary-green));
+}
+
+.btn-add-crop:hover {
+    transform: translateY(-3px);
+    box-shadow: var(--shadow-md);
+}
+
+.btn-add-crop::before {
+    content: "";
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    width: 0;
+    height: 0;
+    border-radius: 50%;
+    background: rgba(255,255,255,0.3);
+    transform: translate(-50%, -50%);
+    transition: width 0.6s, height 0.6s;
+}
+
+.btn-add-crop:hover::before {
+    width: 300px;
+    height: 300px;
+}
+
+.btn-update-stage {
+    background: linear-gradient(135deg, var(--accent-orange), #ff6b00);
+}
+
+.btn-update-stage:hover {
+    transform: translateY(-3px);
+    box-shadow: var(--shadow-md);
+}
+
+/* Knowledge Base Buttons */
+.kb-buttons {
+    display: flex;
+    justify-content: center;
+    gap: 24px;
+    flex-wrap: wrap;
+    margin-top: 30px;
+}
+
+.kb-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 12px;
+    padding: 20px 40px;
+    font-size: 1.1rem;
+    font-weight: 700;
+    text-decoration: none;
+    color: white;
+    border-radius: 16px;
+    box-shadow: var(--shadow-md);
+    position: relative;
+    overflow: hidden;
+    transition: var(--transition);
+    animation: floatBtn 3s ease-in-out infinite;
+}
+
+@keyframes floatBtn {
+    0%, 100% { transform: translateY(0px); }
+    50% { transform: translateY(-10px); }
+}
+
+.kb-btn::before {
+    content: "";
+    position: absolute;
+    top: -50%;
+    left: -50%;
+    width: 200%;
+    height: 200%;
+    background: radial-gradient(circle, rgba(255,255,255,0.3) 0%, transparent 70%);
+    transform: scale(0);
+    transition: transform 0.6s;
+}
+
+.kb-btn:hover::before {
+    transform: scale(1);
+}
+
+.kb-btn:hover {
+    transform: translateY(-8px) scale(1.05);
+    box-shadow: var(--shadow-lg);
+}
+
+.kb-icon {
+    font-size: 1.5rem;
+    animation: rotate 3s linear infinite;
+}
+
+@keyframes rotate {
+    from { transform: rotate(0deg); }
+    to { transform: rotate(360deg); }
+}
+
+.tomato-btn {
+    background: linear-gradient(135deg, #ff4c4c, #ff7f50);
+}
+
+.groundnut-btn {
+    background: linear-gradient(135deg, #ffca28, #ffb74d);
+}
+
+/* Weather Card */
+#weather {
+    max-width: 100%;
+}
+
+#weather.section {
+    padding: 20px;
+}
+
+#weatherBox {
+    background: transparent;
+    padding: 0;
+    border-radius: 0;
+    box-shadow: none;
+    text-align: left;
+    animation: fadeIn 1s ease-out;
+    max-width: 100%;
+}
+
+#weatherBox img {
+    transition: transform 0.3s ease;
+}
+
+#weatherBox img:hover {
+    transform: scale(1.05);
+}
+
+/* Disease Recognition Button */
+.disease-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 10px;
+    padding: 16px 32px;
+    font-weight: 600;
+    font-size: 16px;
+    text-decoration: none;
+    color: white;
+    border-radius: 12px;
+    background: linear-gradient(135deg, #667eea, #764ba2);
+    box-shadow: var(--shadow-md);
+    transition: var(--transition);
+    border: none;
+    cursor: pointer;
+}
+
+.disease-btn:hover {
+    transform: translateY(-3px);
+    box-shadow: var(--shadow-lg);
+}
+
+/* Profile Modal */
+.profile-modal {
+    display: none;
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background: rgba(0, 0, 0, 0.5);
+    backdrop-filter: blur(5px);
+    z-index: 1000;
+    align-items: center;
+    justify-content: center;
+    animation: fadeIn 0.3s ease-out;
+}
+
+.profile-modal.active {
+    display: flex;
+}
+
+.profile-modal-content {
+    background: white;
+    border-radius: 20px;
+    padding: 40px;
+    max-width: 600px;
+    width: 90%;
+    max-height: 90vh;
+    overflow-y: auto;
+    box-shadow: var(--shadow-lg);
+    position: relative;
+    animation: slideUp 0.4s ease-out;
+}
+
+@keyframes slideUp {
+    from {
+        opacity: 0;
+        transform: translateY(50px);
+    }
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+
+.profile-modal-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 30px;
+    padding-bottom: 20px;
+    border-bottom: 3px solid var(--bg-light);
+    position: relative;
+}
+
+.profile-modal-header h2 {
+    font-size: 1.8rem;
+    font-weight: 800;
+    color: var(--primary-green-dark);
+    margin: 0;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+}
+
+.profile-modal-header::after {
+    content: "";
+    position: absolute;
+    bottom: -3px;
+    left: 0;
+    width: 60px;
+    height: 3px;
+    background: var(--primary-green);
+}
+
+.close-modal {
+    background: var(--bg-light);
+    border: none;
+    width: 40px;
+    height: 40px;
+    border-radius: 50%;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: var(--transition);
+    color: var(--text-dark);
+    font-size: 20px;
+}
+
+.close-modal:hover {
+    background: var(--error-color);
+    color: white;
+    transform: rotate(90deg);
+}
+
+.profile-modal-body {
+    margin-top: 20px;
+}
+
+.profile-modal-body input[type="text"],
+.profile-modal-body input[type="email"],
+.profile-modal-body input[type="tel"] {
+    transition: var(--transition);
+}
+
+.profile-modal-body input[type="text"]:focus,
+.profile-modal-body input[type="email"]:focus,
+.profile-modal-body input[type="tel"]:focus {
+    outline: none;
+    border-color: var(--primary-green);
+    box-shadow: 0 0 0 3px rgba(45, 134, 89, 0.1);
+}
+
+.profile-modal-body button[type="submit"]:hover {
+    transform: translateY(-2px);
+    box-shadow: var(--shadow-md);
+}
+
+.profile-modal-body button[type="button"]:hover {
+    background: var(--bg-light);
+    border-color: var(--primary-green);
+    color: var(--primary-green);
+}
+
+/* Responsive Design */
+@media (max-width: 1024px) {
+    .sidebar {
+        width: 240px;
+    }
+}
+
+@media (max-width: 768px) {
+    /* Show hamburger menu on mobile */
+    .menu-toggle {
+        display: flex !important;
+        visibility: visible !important;
+        opacity: 1 !important;
+    }
+
+    /* Show close button in sidebar on mobile */
+    .sidebar-close {
+        display: flex !important;
+    }
+
+    .sidebar-close:hover {
+        background: rgba(255,255,255,0.3) !important;
+        transform: rotate(90deg);
+    }
+
+    /* Hide sidebar by default on mobile */
+    .sidebar {
+        position: fixed;
+        left: -280px;
+        top: 0;
+        width: 280px;
+        height: 100vh;
+        transition: left 0.3s ease-out;
+        z-index: 1000;
+        background: var(--sidebar-bg) !important;
+        pointer-events: none; /* Disable pointer events when hidden */
+    }
+
+    /* Show sidebar when active */
+    .sidebar.active {
+        left: 0;
+        z-index: 1000;
+        pointer-events: auto !important; /* Enable pointer events when visible */
+    }
+
+    /* Ensure all interactive elements in sidebar are clickable when active */
+    .sidebar.active a,
+    .sidebar.active button,
+    .sidebar.active .logout-btn,
+    .sidebar.active .lang-switch a,
+    .sidebar.active .sidebar-close {
+        pointer-events: auto !important;
+        cursor: pointer;
+        -webkit-tap-highlight-color: rgba(255, 255, 255, 0.3);
+        touch-action: manipulation;
+        position: relative;
+        z-index: 1001;
+    }
+
+    .sidebar a,
+    .sidebar button,
+    .sidebar .logout-btn,
+    .sidebar .lang-switch a {
+        min-height: 44px; /* Minimum touch target size for mobile */
+        display: flex;
+        align-items: center;
+    }
+
+    /* Prevent body scroll when sidebar is open */
+    body.sidebar-open {
+        overflow: hidden;
+    }
+
+    .main {
+        padding: 20px;
+        padding-top: 80px; /* Space for hamburger menu */
+    }
+
+    .header {
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 12px;
+        margin-top: 20px;
+    }
+
+    .cards {
+        grid-template-columns: 1fr;
+    }
+}
+
+@media (max-width: 480px) {
+    .main {
+        padding: 16px;
+    }
+
+    .section {
+        padding: 20px;
+    }
+
+    .kb-buttons {
+        flex-direction: column;
+    }
+
+    .kb-btn {
+        width: 100%;
+    }
+
+    /* Weather forecast responsive */
+    .forecast-grid {
+        grid-template-columns: repeat(4, 1fr) !important;
+        gap: 8px !important;
+    }
+
+    .forecast-day {
+        padding: 12px 4px !important;
+    }
+
+    .forecast-day img {
+        width: 30px !important;
+        height: 30px !important;
+    }
+}
+
+@media (max-width: 768px) {
+    /* Weather forecast responsive for tablets */
+    .forecast-grid {
+        grid-template-columns: repeat(4, 1fr) !important;
+        gap: 10px !important;
+    }
+}
+.kb-btn {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 18px 22px;
+    border-radius: 16px;
+    background: #ffffff;
+    text-decoration: none;
+}
+
+.kb-text {
+    font-size: 18px;
+    font-weight: 600;
+    color: #2e7d32;
+}
+
+.kb-emoji,
+.kb-icon {
+    font-size: 26px;
+}
+
+</style>
+</head>
+<body>
+
+<!-- Floating Background Icons -->
+<i class="fas fa-leaf icon-bg"></i>
+<i class="fas fa-seedling icon-bg"></i>
+<i class="fas fa-tractor icon-bg"></i>
+<i class="fas fa-water icon-bg"></i>
+<i class="fas fa-sun icon-bg"></i>
+
+<!-- Hamburger Menu Button (Mobile Only) -->
+<button class="menu-toggle" id="menuToggle" type="button">
+    <i class="fas fa-bars" id="menuIcon"></i>
+</button>
+
+<!-- Sidebar Overlay (Mobile Only) -->
+<div class="sidebar-overlay" id="sidebarOverlay" onclick="closeSidebar()"></div>
+
+<div class="dashboard">
+
+<!-- Sidebar -->
+<div class="sidebar" id="sidebar">
+    <!-- Close Button (Mobile Only) -->
+    <button class="sidebar-close" onclick="closeSidebar()" style="display: none; position: absolute; top: 20px; right: 20px; background: rgba(255,255,255,0.2); border: none; color: white; width: 40px; height: 40px; border-radius: 50%; cursor: pointer; align-items: center; justify-content: center; transition: var(--transition);">
+        <i class="fas fa-times"></i>
+    </button>
+    <h2><i class="fas fa-tractor"></i> <?php echo $translations['farmer_dashboard'] ?? 'Farmer Dashboard'; ?></h2>
+
+    <nav>
+        <a href="#" onclick="openProfileModal(); return false;"><i class="fas fa-user"></i> <?php echo $translations['profile']; ?></a>
+        <a href="#crops"><i class="fas fa-seedling"></i> <?php echo $translations['crop_management']; ?></a>
+        <a href="knowledge_base.php"><i class="fas fa-book"></i> <?php echo $translations['knowledge_base']; ?></a>
+        <a href="#notifications"><i class="fas fa-bell"></i> <?php echo $translations['notifications']; ?></a>
+        <a href="farmer_reports.php"><i class="fas fa-chart-line"></i> <?php echo $translations['reports']; ?></a>
+        <a href="#weather"><i class="fas fa-cloud-sun"></i> <?php echo $translations['weather']; ?></a>
+    </nav>
+
+    <div>
+        <div class="lang-switch">
+            <a href="?lang=en" class="<?php echo $lang === 'en' ? 'active' : ''; ?>">English</a>
+            <a href="?lang=te" class="<?php echo $lang === 'te' ? 'active' : ''; ?>">తెలుగు</a>
+        </div>
+
+        <form action="logout.php" method="POST">
+            <button type="submit" class="logout-btn" onclick="closeSidebar()">
+                <i class="fas fa-sign-out-alt"></i>
+                <?php echo $translations['logout']; ?>
+            </button>
+        </form>
+    </div>
+</div>
+
+<!-- MAIN CONTENT -->
+<div class="main">
+
+<!-- Header -->
+<div class="header">
+    <div>
+        <h1><?php echo $translations['hello']; ?>, <?php echo htmlspecialchars($user['fullname']); ?>! 👋</h1>
+        <div class="welcome">
+            <i class="fas fa-map-marker-alt"></i>
+            <?php echo $translations['district']; ?>: <?php echo htmlspecialchars($user['district']); ?>
+        </div>
+    </div>
+</div>
+
+<!-- Dashboard Cards -->
+<div class="cards">
+    <div class="card" onclick="document.querySelector('#crops').scrollIntoView({behavior: 'smooth'})">
+        <i class="fas fa-seedling"></i>
+        <h3><?php echo $translations['crop_management']; ?></h3>
+    </div>
+    <div class="card" onclick="window.location.href='knowledge_base.php'">
+        <i class="fas fa-book"></i>
+        <h3><?php echo $translations['knowledge_base']; ?></h3>
+    </div>
+    <div class="card" onclick="document.querySelector('#notifications').scrollIntoView({behavior: 'smooth'})">
+        <i class="fas fa-bell"></i>
+        <h3><?php echo $translations['notifications']; ?></h3>
+    </div>
+    <div class="card" onclick="window.location.href='farmer_reports.php'">
+        <i class="fas fa-chart-line"></i>
+        <h3><?php echo $translations['reports']; ?></h3>
+    </div>
+</div>
+
+<!-- Profile Modal -->
+<div class="profile-modal" id="profileModal">
+    <div class="profile-modal-content">
+        <div class="profile-modal-header">
+            <h2><i class="fas fa-user"></i> <?php echo $translations['profile'] ?? 'Profile'; ?></h2>
+            <button class="close-modal" onclick="closeProfileModal()">
+                <i class="fas fa-times"></i>
+            </button>
+        </div>
+        <div class="profile-modal-body">
+            <div id="profileMessage" style="display: none; margin-bottom: 20px; padding: 12px; border-radius: 8px; font-size: 14px;"></div>
+            <form id="profileForm">
+                <div style="margin-bottom: 20px;">
+                    <label style="display: block; margin-bottom: 8px; font-weight: 600; color: var(--text-dark); font-size: 14px;">
+                        <i class="fas fa-user-circle" style="color: var(--primary-green); margin-right: 8px;"></i>
+                        <?php echo $translations['fullname'] ?? 'Full Name'; ?> <span style="color: red;">*</span>
+                    </label>
+                    <input type="text" id="profile_fullname" name="fullname" value="<?php echo htmlspecialchars($user['fullname']); ?>" 
+                           style="width: 100%; padding: 12px; border: 2px solid var(--border-color); border-radius: 8px; font-size: 15px; font-family: inherit;" required>
+                </div>
+                
+                <div style="margin-bottom: 20px;">
+                    <label style="display: block; margin-bottom: 8px; font-weight: 600; color: var(--text-dark); font-size: 14px;">
+                        <i class="fas fa-envelope" style="color: var(--primary-green); margin-right: 8px;"></i>
+                        <?php echo $translations['email'] ?? 'Email'; ?> <span style="color: red;">*</span>
+                    </label>
+                    <input type="email" id="profile_email" name="email" value="<?php echo htmlspecialchars($user['email']); ?>" 
+                           style="width: 100%; padding: 12px; border: 2px solid var(--border-color); border-radius: 8px; font-size: 15px; font-family: inherit;" required>
+                </div>
+                
+                <div style="margin-bottom: 20px;">
+                    <label style="display: block; margin-bottom: 8px; font-weight: 600; color: var(--text-dark); font-size: 14px;">
+                        <i class="fas fa-phone" style="color: var(--primary-green); margin-right: 8px;"></i>
+                        <?php echo $translations['mobile'] ?? 'Mobile'; ?> <span style="color: red;">*</span>
+                    </label>
+                    <input type="tel" id="profile_mobile" name="mobile" value="<?php echo htmlspecialchars($user['mobile']); ?>" 
+                           style="width: 100%; padding: 12px; border: 2px solid var(--border-color); border-radius: 8px; font-size: 15px; font-family: inherit;" required>
+                </div>
+                
+                <div style="margin-bottom: 20px;">
+                    <label style="display: block; margin-bottom: 8px; font-weight: 600; color: var(--text-dark); font-size: 14px;">
+                        <i class="fas fa-map-marker-alt" style="color: var(--primary-green); margin-right: 8px;"></i>
+                        <?php echo $translations['district'] ?? 'District'; ?>
+                    </label>
+                    <input type="text" id="profile_district" name="district" value="<?php echo htmlspecialchars($user['district'] ?? ''); ?>" 
+                           style="width: 100%; padding: 12px; border: 2px solid var(--border-color); border-radius: 8px; font-size: 15px; font-family: inherit;">
+                </div>
+                
+                <div style="margin-bottom: 24px;">
+                    <label style="display: block; margin-bottom: 8px; font-weight: 600; color: var(--text-dark); font-size: 14px;">
+                        <i class="fas fa-globe" style="color: var(--primary-green); margin-right: 8px;"></i>
+                        <?php echo $translations['state'] ?? 'State'; ?>
+                    </label>
+                    <input type="text" id="profile_state" name="state" value="<?php echo htmlspecialchars($user['state'] ?? ''); ?>" 
+                           style="width: 100%; padding: 12px; border: 2px solid var(--border-color); border-radius: 8px; font-size: 15px; font-family: inherit;">
+                </div>
+                
+                <div style="display: flex; gap: 12px; justify-content: flex-end;">
+                    <button type="button" onclick="closeProfileModal()" 
+                            style="padding: 12px 24px; border: 2px solid var(--border-color); background: white; color: var(--text-dark); border-radius: 8px; font-weight: 600; cursor: pointer; transition: var(--transition);">
+                        <?php echo $translations['cancel'] ?? 'Cancel'; ?>
+                    </button>
+                    <button type="submit" 
+                            style="padding: 12px 24px; background: linear-gradient(135deg, var(--primary-green), var(--secondary-green)); color: white; border: none; border-radius: 8px; font-weight: 600; cursor: pointer; transition: var(--transition); box-shadow: var(--shadow-sm);">
+                        <i class="fas fa-save"></i> <?php echo $translations['save_changes'] ?? 'Save Changes'; ?>
+                    </button>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+
+<!-- Crops Section -->
+<div class="section" id="crops">
+    <h2><i class="fas fa-seedling"></i> <?php echo $translations['crop_management']; ?></h2>
+    <div style="margin-bottom: 24px;">
+        <a href="add_crop.php" class="btn-add-crop">
+            <i class="fas fa-plus-circle"></i>
+            Add New Crop
+        </a>
+        <a href="update_stage.php" class="btn-update-stage">
+            <i class="fas fa-sync-alt"></i>
+            Update Crop Stage
+        </a>
+    </div>
+    <ul class="crop-list">
+        <?php 
+        if(count($farmer_crops) > 0){ 
+            foreach($farmer_crops as $c){ 
+                echo "<li>
+                        <i class='fas fa-seedling' style='color: var(--primary-green); margin-right: 10px;'></i>
+                        <strong>" . htmlspecialchars($c['crop_name']) . "</strong> 
+                        <span style='color: var(--text-light); margin-left: 10px;'>
+                            (Stage: " . htmlspecialchars($c['growth_stage']) . ")
+                        </span>
+                      </li>"; 
+            } 
+        } else {
+            echo "<li style='text-align: center; color: var(--text-light);'>
+                    <i class='fas fa-info-circle' style='margin-right: 8px;'></i>
+                    No crops found. Add your first crop to get started!
+                  </li>";
+        }
+        ?>
+    </ul>
+</div>
+
+<!-- Crop Disease Recognition Section -->
+<div class="section" id="disease-recognition">
+    <h2><i class="fas fa-microscope"></i> <?php echo $translations['crop_disease_recognition'] ?? 'Crop Disease Recognition'; ?></h2>
+    <p style="color: var(--text-light); margin-bottom: 20px;">
+        <?php echo $translations['disease_recognition_desc'] ?? 'Use this AI-powered tool to identify potential diseases in your crops by uploading leaf images. Get instant diagnosis and treatment recommendations.'; ?>
+    </p>
+    <button onclick="window.location.href='http://127.0.0.1:5000'" class="disease-btn">
+        <i class="fas fa-camera"></i>
+        <?php echo $translations['recognize_disease'] ?? 'Recognize Disease'; ?>
+    </button>
+</div>
+
+<!-- Knowledge Base Section -->
+<div class="section" id="knowledge">
+    <h2><i class="fas fa-book"></i> <?php echo $translations['knowledge_base']; ?></h2>
+    <p style="color: var(--text-light); margin-bottom: 24px; text-align: center;">
+        Access comprehensive guides and expert advice for your crops
+    </p>
+    <div class="kb-buttons">
+<?php
+if(count($kb_crops) > 0){
+    foreach($kb_crops as $crop){
+        $cropParam = urlencode(strtolower($crop));
+        echo "
+        <a href='knowledge_base.php?crop=$cropParam' class='kb-btn'>
+            <span class='kb-emoji'>🌾</span>
+            <span class='kb-text'>" . htmlspecialchars($crop) . " Guide</span>
+            <span class='kb-icon'>🌱</span>
+        </a>";
+    }
+} else {
+    echo "<p style='text-align:center;color:#666;'>
+            No crop guides available yet.
+          </p>";
+}
+?>
+</div>
+
+
+</div>
+
+<!-- Notifications Section -->
+<div class="section" id="notifications">
+    <h2><i class="fas fa-bell"></i> <?php echo $translations['notifications']; ?></h2>
+    <ul class="notification-list">
+        <?php 
+        if(count($notifications) > 0){
+            foreach($notifications as $n){
+                $d = date("d M Y", strtotime($n['notify_date']));
+                $statusClass = ($n['status'] == 'unread') ? 'unread' : 'read';
+                echo "<li class='$statusClass' data-id='{$n['id']}'>
+                        <i class='fas fa-info-circle' style='color: var(--primary-green); margin-right: 10px;'></i>
+                        <strong>[{$d}]</strong> " . htmlspecialchars($n['message']) . " 
+                        <span style='color: var(--text-light);'>({$n['crop_name']})</span>";
+                if($n['status'] == 'unread'){
+                    echo " <button class='mark-btn' data-id='{$n['id']}'>
+                            <i class='fas fa-check'></i> Mark as Read
+                           </button>";
+                }
+                echo "</li>";
+            }
+        } else {
+            echo "<li style='text-align: center; color: var(--text-light);'>
+                    <i class='fas fa-bell-slash' style='margin-right: 8px;'></i>
+                    No notifications at the moment.
+                  </li>";
+        }
+        ?>
+    </ul>
+</div>
+
+<!-- Weather Section -->
+<div class="section" id="weather">
+    <h2><i class="fas fa-cloud-sun"></i> <?php echo $translations['weather']; ?></h2>
+    <div id="weatherBox">
+        <p style="color: var(--text-light);">
+            <i class="fas fa-spinner fa-spin"></i>
+            <?php echo ($lang=='te')
+                ? 'మీ ప్రస్తుత స్థలానికి వాతావరణం పొందుతోంది...'
+                : 'Fetching weather for your current location...';
+            ?>
+        </p>
+    </div>
+</div>
+<script>
+/* ================= WEATHER (HIGH ACCURACY GPS WITH MANUAL LOCATION FALLBACK) ================= */
+document.addEventListener("DOMContentLoaded", function () {
+    const apiKey = "8939754260ab572788b1c798b4e89406";
+    const weatherBox = document.getElementById("weatherBox");
+    const CACHE_DURATION = 15 * 60 * 1000; // 15 minutes in milliseconds
+    
+    // Store current weather data globally for access in click handlers
+    let currentWeatherData = null;
+
+    if (!weatherBox) return;
+
+    // Get user's stored location from database (for fallback only)
+    const userLat = parseFloat("<?php echo addslashes($user['latitude'] ?? ''); ?>");
+    const userLon = parseFloat("<?php echo addslashes($user['longitude'] ?? ''); ?>");
+
+    /**
+     * Get manual location from localStorage
+     */
+    function getManualLocation() {
+        try {
+            return localStorage.getItem('manualWeatherLocation');
+        } catch (e) {
+            console.warn('Error reading manual location:', e);
+        }
+        return null;
+    }
+
+    /**
+     * Save manual location to localStorage
+     */
+    function saveManualLocation(cityName) {
+        try {
+            localStorage.setItem('manualWeatherLocation', cityName);
+            // Clear weather cache when location changes
+            localStorage.removeItem('weatherData');
+            localStorage.removeItem('weatherDataTime');
+        } catch (e) {
+            console.warn('Error saving manual location:', e);
+        }
+    }
+
+    /**
+     * Check if cached weather data is still valid
+     */
+    function getCachedWeather() {
+        try {
+            const cached = localStorage.getItem('weatherData');
+            const cachedTime = localStorage.getItem('weatherDataTime');
+            
+            if (cached && cachedTime) {
+                const age = Date.now() - parseInt(cachedTime);
+                if (age < CACHE_DURATION) {
+                    const data = JSON.parse(cached);
+                    // Handle both old format (just current data) and new format (current + forecast)
+                    if (data.current) {
+                        return data; // New format
+                    } else {
+                        return { current: data, forecast: null }; // Old format, convert to new
+                    }
+                }
+            }
+        } catch (e) {
+            console.warn('Error reading cached weather:', e);
+        }
+        return null;
+    }
+
+    /**
+     * Format date for display
+     */
+    function formatDate(dateString) {
+        const date = new Date(dateString);
+        const days = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+        const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+        return {
+            day: days[date.getDay()],
+            date: date.getDate(),
+            month: months[date.getMonth()],
+            full: days[date.getDay()] + ', ' + date.getDate() + ' ' + months[date.getMonth()]
+        };
+    }
+
+    /**
+     * Format time for display
+     */
+    function formatTime(dateString) {
+        const date = new Date(dateString);
+        let hours = date.getHours();
+        const ampm = hours >= 12 ? 'pm' : 'am';
+        hours = hours % 12;
+        hours = hours ? hours : 12;
+        return hours + ' ' + ampm;
+    }
+
+    /**
+     * Process forecast data for hourly and daily display
+     */
+    function processForecastData(forecastData) {
+        if (!forecastData || !forecastData.list) return { hourly: [], daily: [] };
+
+        const now = new Date();
+        const hourly = [];
+        const dailyMap = {};
+
+        // Process next 24 hours (8 data points = 24 hours)
+        forecastData.list.slice(0, 8).forEach(item => {
+            hourly.push({
+                time: formatTime(item.dt_txt),
+                temp: Math.round(item.main.temp),
+                icon: item.weather[0].icon
+            });
+        });
+
+        // Process daily forecast (group by date)
+        forecastData.list.forEach(item => {
+            const date = new Date(item.dt_txt);
+            const dateKey = date.toDateString();
+            
+            if (!dailyMap[dateKey]) {
+                dailyMap[dateKey] = {
+                    date: dateKey,
+                    dateObj: date,
+                    temps: [],
+                    icons: [],
+                    descriptions: []
+                };
+            }
+            
+            dailyMap[dateKey].temps.push(item.main.temp);
+            dailyMap[dateKey].icons.push(item.weather[0].icon);
+            dailyMap[dateKey].descriptions.push(item.weather[0].description);
+        });
+
+        // Convert to array and calculate daily averages
+        const daily = Object.values(dailyMap).slice(0, 7).map(day => {
+            const avgTemp = Math.round(day.temps.reduce((a, b) => a + b, 0) / day.temps.length);
+            const minTemp = Math.round(Math.min(...day.temps));
+            const maxTemp = Math.round(Math.max(...day.temps));
+            const mostCommonIcon = day.icons[Math.floor(day.icons.length / 2)]; // Use middle of day icon
+            
+            return {
+                day: formatDate(day.date).day,
+                date: day.dateObj.getDate(),
+                icon: mostCommonIcon,
+                max: maxTemp,
+                min: minTemp
+            };
+        });
+
+        return { hourly, daily };
+    }
+
+    /**
+     * Generate hourly temperature chart HTML
+     */
+    function generateHourlyChart(hourlyData) {
+        if (!hourlyData || hourlyData.length === 0) return '';
+
+        const temps = hourlyData.map(h => h.temp);
+        const minTemp = Math.min(...temps);
+        const maxTemp = Math.max(...temps);
+        const range = maxTemp - minTemp || 1;
+        const chartHeight = 80;
+
+        let chartHTML = '<div style="position: relative; height: ' + chartHeight + 'px; margin-bottom: 45px; padding: 0 8px;">';
+        
+        // Draw temperature line
+        chartHTML += '<svg style="position: absolute; top: 0; left: 0; width: 100%; height: 100%;" viewBox="0 0 800 ' + chartHeight + '">';
+        chartHTML += '<defs><linearGradient id="tempGradient" x1="0%" y1="0%" x2="0%" y2="100%"><stop offset="0%" style="stop-color:var(--accent-orange);stop-opacity:0.3" /><stop offset="100%" style="stop-color:var(--accent-orange);stop-opacity:0.05" /></linearGradient></defs>';
+        
+        // Generate path for temperature line
+        const points = hourlyData.map((h, i) => {
+            const x = (i / (hourlyData.length - 1)) * 800;
+            const y = chartHeight - ((h.temp - minTemp) / range) * (chartHeight - 40) - 20;
+            return x + ',' + y;
+        }).join(' ');
+        
+        chartHTML += '<path d="M ' + points + '" fill="none" stroke="var(--accent-orange)" stroke-width="3" />';
+        
+        // Fill area under curve
+        const areaPath = 'M ' + points + ' L 800,' + (chartHeight - 20) + ' L 0,' + (chartHeight - 20) + ' Z';
+        chartHTML += '<path d="' + areaPath + '" fill="url(#tempGradient)" />';
+        
+        // Add temperature points
+        hourlyData.forEach((h, i) => {
+            const x = (i / (hourlyData.length - 1)) * 800;
+            const y = chartHeight - ((h.temp - minTemp) / range) * (chartHeight - 40) - 20;
+            chartHTML += '<circle cx="' + x + '" cy="' + y + '" r="4" fill="var(--accent-orange)" />';
+        });
+        
+        chartHTML += '</svg>';
+        
+        // Add time labels and temperature values
+        chartHTML += '<div style="display: flex; justify-content: space-between; position: absolute; bottom: -38px; left: 0; right: 0; z-index: 2;">';
+        hourlyData.forEach((h, i) => {
+            chartHTML += '<div style="text-align: center; flex: 1;">';
+            chartHTML += '<div style="font-size: 0.65rem; font-weight: 600; color: var(--text-dark); margin-bottom: 2px;">' + h.temp + '°</div>';
+            chartHTML += '<div style="font-size: 0.6rem; color: var(--text-light);">' + h.time + '</div>';
+            chartHTML += '</div>';
+        });
+        chartHTML += '</div>';
+        chartHTML += '</div>';
+
+        return chartHTML;
+    }
+
+    /**
+     * Update the UI with weather data (Google Weather style)
+     */
+    function updateWeatherUI(data) {
+        // Store data globally for click handlers
+        currentWeatherData = data;
+        
+        const current = data.current || data;
+        const forecast = data.forecast;
+        const forecastProcessed = forecast ? processForecastData(forecast) : { hourly: [], daily: [] };
+        const today = new Date();
+        const currentTime = formatTime(today.toISOString());
+        const currentDate = formatDate(today.toISOString());
+
+        // Calculate precipitation (use forecast data if available)
+        const precipitation = forecast && forecast.list && forecast.list[0] && forecast.list[0].pop 
+            ? Math.round(forecast.list[0].pop * 100) 
+            : 0;
+
+        // Convert wind speed from m/s to km/h
+        const windSpeedKmh = current.wind ? Math.round((current.wind.speed * 3.6)) : 0;
+
+        weatherBox.innerHTML = `
+            <div style="background: white; border-radius: 12px; padding: 0; overflow: hidden;">
+                <!-- Header with location and change link -->
+                <div style="padding: 12px 16px 8px; border-bottom: 1px solid var(--border-color); display: flex; justify-content: space-between; align-items: center;">
+                    <div>
+                        <div style="font-size: 0.7rem; color: var(--text-light); margin-bottom: 1px;">Results for ${current.name || 'Current Location'}</div>
+                        <div style="font-size: 0.85rem; font-weight: 600; color: var(--text-dark);">Weather</div>
+                        <div style="font-size: 0.65rem; color: var(--text-light); margin-top: 1px;">
+                            ${currentDate.full}, ${currentTime}
+                        </div>
+                    </div>
+                    <div>
+                        <a href="#" id="changeLocationLink" style="color: var(--primary-green); font-size: 0.7rem; text-decoration: none; font-weight: 500;">
+                            Change Location
+                        </a>
+                    </div>
+                </div>
+
+                <!-- Current Weather Display -->
+                <div style="padding: 16px; background: linear-gradient(135deg, rgba(45, 134, 89, 0.05) 0%, rgba(255, 152, 0, 0.05) 100%);">
+                    <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; flex-wrap: wrap; gap: 12px;">
+                        <div style="display: flex; align-items: center; gap: 12px;">
+                            <img src="https://openweathermap.org/img/wn/${current.weather[0].icon}@2x.png" alt="Weather Icon" style="width: 60px; height: 60px; flex-shrink: 0;">
+                            <div>
+                                <div style="font-size: 2rem; font-weight: 300; color: var(--text-dark); line-height: 1;">
+                                    ${Math.round(current.main.temp)}°<span style="font-size: 1rem; vertical-align: super;">C</span>
+                                </div>
+                                <div style="font-size: 0.85rem; font-weight: 600; color: var(--text-dark); margin-top: 4px; text-transform: capitalize;">
+                                    ${current.weather[0].description}
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Weather Details Row -->
+                    <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--border-color);">
+                        <div>
+                            <div style="font-size: 0.65rem; color: var(--text-light); margin-bottom: 3px;">Precipitation</div>
+                            <div style="font-size: 0.85rem; font-weight: 600; color: var(--text-dark);">${precipitation}%</div>
+                        </div>
+                        <div>
+                            <div style="font-size: 0.65rem; color: var(--text-light); margin-bottom: 3px;">Humidity</div>
+                            <div style="font-size: 0.85rem; font-weight: 600; color: var(--text-dark);">${current.main.humidity}%</div>
+                        </div>
+                        <div>
+                            <div style="font-size: 0.65rem; color: var(--text-light); margin-bottom: 3px;">Wind</div>
+                            <div style="font-size: 0.85rem; font-weight: 600; color: var(--text-dark);">${windSpeedKmh} km/h</div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Hourly Temperature Chart -->
+                ${forecastProcessed.hourly.length > 0 ? `
+                <div style="padding: 16px; border-top: 1px solid var(--border-color);" id="hourlyChartContainer">
+                    <h3 style="font-size: 0.8rem; font-weight: 600; color: var(--text-dark); margin-bottom: 12px;">Temperature</h3>
+                    <div id="hourlyChartContent">
+                        ${generateHourlyChart(forecastProcessed.hourly)}
+                    </div>
+                </div>
+                ` : ''}
+
+                <!-- 7-Day Forecast -->
+                ${forecastProcessed.daily.length > 0 ? `
+                <div style="padding: 16px; border-top: 1px solid var(--border-color);">
+                    <div style="display: grid; grid-template-columns: repeat(7, 1fr); gap: 6px;" class="forecast-grid" id="forecastGrid">
+                        ${forecastProcessed.daily.map((day, index) => `
+                            <div style="text-align: center; padding: 8px 4px; border-radius: 8px; ${index === 0 ? 'background: var(--bg-light);' : ''} transition: var(--transition); cursor: pointer;" 
+                                 class="forecast-day" 
+                                 data-day-index="${index}">
+                                <div style="font-size: 0.65rem; font-weight: 600; color: var(--text-dark); margin-bottom: 4px;">
+                                    ${index === 0 ? 'Today' : day.day}
+                                </div>
+                                <img src="https://openweathermap.org/img/wn/${day.icon}@2x.png" alt="Weather" style="width: 28px; height: 28px; margin: 4px auto; display: block;">
+                                <div style="font-size: 0.75rem; font-weight: 600; color: var(--text-dark); margin-top: 4px;">
+                                    ${day.max}° <span style="color: var(--text-light); font-weight: 400;">${day.min}°</span>
+                                </div>
+                            </div>
+                        `).join('')}
+                    </div>
+                </div>
+                ` : ''}
+            </div>
+        `;
+
+        // Attach click handler to Change Location link
+        const changeLink = document.getElementById('changeLocationLink');
+        if (changeLink) {
+            changeLink.addEventListener('click', function(e) {
+                e.preventDefault();
+                showLocationInput();
+            });
+        }
+
+        // Attach click handlers to forecast day buttons using event delegation
+        const forecastGrid = document.getElementById('forecastGrid');
+        if (forecastGrid) {
+            forecastGrid.addEventListener('click', function(e) {
+                const forecastDay = e.target.closest('.forecast-day');
+                if (!forecastDay) return;
+
+                e.preventDefault();
+                
+                const dayIndex = parseInt(forecastDay.getAttribute('data-day-index'));
+                
+                // Get all forecast day buttons
+                const forecastDays = document.querySelectorAll('.forecast-day');
+                
+                // Remove selected class and reset background from all days
+                forecastDays.forEach(day => {
+                    day.classList.remove('selected-day');
+                    const idx = parseInt(day.getAttribute('data-day-index'));
+                    if (idx === 0) {
+                        day.style.background = 'var(--bg-light)';
+                    } else {
+                        day.style.background = 'transparent';
+                    }
+                });
+                
+                // Add selected class to clicked day
+                forecastDay.classList.add('selected-day');
+                forecastDay.style.background = 'rgba(45, 134, 89, 0.15)';
+                
+                // Update hourly chart for selected day
+                if (currentWeatherData && currentWeatherData.forecast) {
+                    updateHourlyChartForDay(dayIndex, currentWeatherData.forecast);
+                }
+            });
+
+            // Add hover effects
+            forecastGrid.addEventListener('mouseover', function(e) {
+                const forecastDay = e.target.closest('.forecast-day');
+                if (forecastDay && !forecastDay.classList.contains('selected-day')) {
+                    forecastDay.style.background = 'var(--bg-light)';
+                }
+            });
+
+            forecastGrid.addEventListener('mouseout', function(e) {
+                const forecastDay = e.target.closest('.forecast-day');
+                if (forecastDay && !forecastDay.classList.contains('selected-day')) {
+                    const dayIndex = parseInt(forecastDay.getAttribute('data-day-index'));
+                    if (dayIndex === 0) {
+                        forecastDay.style.background = 'var(--bg-light)';
+                    } else {
+                        forecastDay.style.background = 'transparent';
+                    }
+                }
+            });
+        }
+    }
+
+    /**
+     * Update hourly chart for a specific day
+     */
+    function updateHourlyChartForDay(dayIndex, forecastData) {
+        if (!forecastData || !forecastData.list) return;
+
+        // Get the date for the selected day
+        const today = new Date();
+        today.setHours(0, 0, 0, 0);
+        const selectedDate = new Date(today);
+        selectedDate.setDate(today.getDate() + dayIndex);
+        selectedDate.setHours(0, 0, 0, 0);
+        
+        // Filter forecast data for the selected day (next 24 hours from that day)
+        const selectedDayData = [];
+        const nextDay = new Date(selectedDate);
+        nextDay.setDate(nextDay.getDate() + 1);
+        
+        forecastData.list.forEach(item => {
+            const itemDate = new Date(item.dt_txt);
+            if (itemDate >= selectedDate && itemDate < nextDay) {
+                selectedDayData.push({
+                    time: formatTime(item.dt_txt),
+                    temp: Math.round(item.main.temp),
+                    icon: item.weather[0].icon
+                });
+            }
+        });
+
+        // If no data for that day, use next 8 hours from start of day
+        if (selectedDayData.length === 0 && dayIndex === 0) {
+            // For today, use next 8 data points
+            forecastData.list.slice(0, 8).forEach(item => {
+                selectedDayData.push({
+                    time: formatTime(item.dt_txt),
+                    temp: Math.round(item.main.temp),
+                    icon: item.weather[0].icon
+                });
+            });
+        } else if (selectedDayData.length === 0) {
+            // For future days, try to get data points closest to that day
+            const startIdx = dayIndex * 8; // Approximate 8 data points per day
+            forecastData.list.slice(startIdx, startIdx + 8).forEach(item => {
+                selectedDayData.push({
+                    time: formatTime(item.dt_txt),
+                    temp: Math.round(item.main.temp),
+                    icon: item.weather[0].icon
+                });
+            });
+        }
+
+        // Update the hourly chart HTML
+        const chartContent = document.getElementById('hourlyChartContent');
+        if (chartContent && selectedDayData.length > 0) {
+            const chartHTML = generateHourlyChart(selectedDayData);
+            chartContent.innerHTML = chartHTML;
+        }
+    }
+
+    /**
+     * Show location input dialog
+     */
+    function showLocationInput() {
+        const manualLocation = getManualLocation();
+        const cityName = prompt('Enter your city name:\n\nExamples:\n- Anantapur\n- Anantapur, IN\n- Anantapur, Andhra Pradesh, IN', manualLocation || '');
+        
+        if (cityName && cityName.trim()) {
+            // Fetch weather for the manually entered city (it will try multiple variations)
+            fetchWeatherByCityWithForecast(cityName.trim());
+        }
+    }
+
+    /**
+     * Geocode city name to get coordinates (more reliable than direct city name lookup)
+     */
+    async function geocodeCityName(cityName) {
+        const geoUrl = `https://api.openweathermap.org/geo/1.0/direct?q=${encodeURIComponent(cityName)}&limit=1&appid=${apiKey}`;
+        
+        try {
+            const response = await fetch(geoUrl);
+            if (!response.ok) {
+                return null;
+            }
+            
+            const data = await response.json();
+            if (data && data.length > 0 && data[0].lat && data[0].lon) {
+                return {
+                    lat: data[0].lat,
+                    lon: data[0].lon,
+                    name: data[0].name
+                };
+            }
+        } catch (error) {
+            console.error('Geocoding error:', error);
+        }
+        return null;
+    }
+
+    /**
+     * Fetch weather using city name (only for manual input)
+     * First tries to geocode the city name to get coordinates, then uses coordinates for weather
+     */
+    async function fetchWeatherByCity(cityName) {
+        // Normalize the city name
+        let normalizedCity = cityName.trim();
+        
+        // Handle common misspellings and variations
+        const cityLower = normalizedCity.toLowerCase();
+        if (cityLower.includes('ananthapur') || cityLower === 'anantapur') {
+            normalizedCity = 'Anantapur';
+        }
+        // Handle Muchurami variations
+        if (cityLower.includes('muchurami') || cityLower.includes('muchuram')) {
+            normalizedCity = 'Muchurami';
+        }
+        
+        // Capitalize first letter properly
+        normalizedCity = normalizedCity.split(' ').map(word => 
+            word.charAt(0).toUpperCase() + word.slice(1).toLowerCase()
+        ).join(' ');
+        
+        // Try multiple variations for geocoding (more comprehensive list)
+        const cityVariations = [
+            normalizedCity,                                    // "Muchurami"
+            normalizedCity + ', IN',                          // "Muchurami, IN"
+            normalizedCity + ', Andhra Pradesh, IN',          // "Muchurami, Andhra Pradesh, IN"
+            normalizedCity + ', AP, IN',                      // "Muchurami, AP, IN"
+            normalizedCity + ', Anantapur, Andhra Pradesh, IN', // "Muchurami, Anantapur, Andhra Pradesh, IN" (for villages near Anantapur)
+            cityName.trim(),                                   // Original input
+            cityName.trim() + ', IN'                          // Original input + country
+        ];
+        
+        // Remove duplicates
+        const uniqueVariations = [...new Set(cityVariations.filter(v => v.trim()))];
+        
+        // Try to geocode each variation
+        for (let i = 0; i < uniqueVariations.length; i++) {
+            const cityQuery = uniqueVariations[i];
+            console.log('Trying to geocode:', cityQuery);
+            
+            const coords = await geocodeCityName(cityQuery);
+            
+            if (coords) {
+                console.log('Geocoding successful, found coordinates:', coords.lat, coords.lon, 'for', coords.name);
+                // Use coordinates to fetch weather (more reliable)
+                await fetchWeatherByCoordinates(coords.lat, coords.lon);
+                // Save the successful city name
+                saveManualLocation(normalizedCity);
+                return; // Success!
+            }
+        }
+        
+        // If geocoding failed for all variations, try direct weather API call as last resort
+        console.log('Geocoding failed, trying direct weather API call');
+        
+        // Try direct API call with a few variations
+        const directVariations = [
+            normalizedCity + ', IN',
+            normalizedCity + ', Andhra Pradesh, IN',
+            normalizedCity
+        ];
+        
+        for (let i = 0; i < directVariations.length; i++) {
+            const cityQuery = directVariations[i];
+            const url = `https://api.openweathermap.org/data/2.5/weather?q=${encodeURIComponent(cityQuery)}&appid=${apiKey}&units=metric`;
+            
+            try {
+                const response = await fetch(url);
+                
+                if (!response.ok) {
+                    if (i < directVariations.length - 1) continue;
+                    throw new Error(`Weather API error: ${response.status}`);
+                }
+
+                const data = await response.json();
+                
+                if (data.cod && data.cod !== 200) {
+                    if (i < directVariations.length - 1) continue;
+                    throw new Error(data.message || 'Weather data unavailable');
+                }
+
+                // Try to get forecast data
+                try {
+                    const forecastUrl = `https://api.openweathermap.org/data/2.5/forecast?q=${encodeURIComponent(cityQuery)}&appid=${apiKey}&units=metric`;
+                    const forecastResponse = await fetch(forecastUrl);
+                    const forecastData = await forecastResponse.json();
+                    
+                    const combinedData = {
+                        current: data,
+                        forecast: forecastData.cod === '200' ? forecastData : null
+                    };
+                    
+                    try {
+                        localStorage.setItem('weatherData', JSON.stringify(combinedData));
+                        localStorage.setItem('weatherDataTime', Date.now().toString());
+                    } catch (e) {
+                        console.warn('Error caching weather data:', e);
+                    }
+                    
+                    updateWeatherUI(combinedData);
+                } catch (forecastError) {
+                    // If forecast fails, still show current weather
+                    const combinedData = {
+                        current: data,
+                        forecast: null
+                    };
+                    try {
+                        localStorage.setItem('weatherData', JSON.stringify(combinedData));
+                        localStorage.setItem('weatherDataTime', Date.now().toString());
+                    } catch (e) {
+                        console.warn('Error caching weather data:', e);
+                    }
+                    updateWeatherUI(combinedData);
+                }
+                saveManualLocation(normalizedCity);
+                return; // Success!
+                
+            } catch (error) {
+                if (i === directVariations.length - 1) {
+                    console.error('All weather fetch attempts failed:', error);
+                    // Show helpful error message
+                    const suggestions = cityLower.includes('muchurami') 
+                        ? '• "Muchurami, Anantapur, IN"\n• "Anantapur, IN" (nearby city)\n• Use GPS location instead'
+                        : `• "${normalizedCity}, IN"\n• "${normalizedCity}, Andhra Pradesh, IN"\n• Use GPS location instead`;
+                    
+                    alert('Unable to find "' + cityName + '".\n\nSmaller towns/villages may not be in the database.\n\nPlease try:\n' + suggestions);
+                    showLocationErrorWithChangeLink();
+                }
+            }
+        }
+    }
+
+    /**
+     * Fetch weather and forecast from OpenWeatherMap API using coordinates
+     */
+    async function fetchWeatherByCoordinates(lat, lon) {
+        try {
+            // Fetch both current weather and forecast
+            const [currentResponse, forecastResponse] = await Promise.all([
+                fetch(`https://api.openweathermap.org/data/2.5/weather?lat=${lat}&lon=${lon}&appid=${apiKey}&units=metric`),
+                fetch(`https://api.openweathermap.org/data/2.5/forecast?lat=${lat}&lon=${lon}&appid=${apiKey}&units=metric`)
+            ]);
+            
+            if (!currentResponse.ok || !forecastResponse.ok) {
+                throw new Error('Weather API error');
+            }
+
+            const currentData = await currentResponse.json();
+            const forecastData = await forecastResponse.json();
+            
+            if (currentData.cod && currentData.cod !== 200) {
+                throw new Error(currentData.message || 'Weather data unavailable');
+            }
+
+            // Combine current and forecast data
+            const combinedData = {
+                current: currentData,
+                forecast: forecastData
+            };
+
+            // Cache the weather data
+            try {
+                localStorage.setItem('weatherData', JSON.stringify(combinedData));
+                localStorage.setItem('weatherDataTime', Date.now().toString());
+            } catch (e) {
+                console.warn('Error caching weather data:', e);
+            }
+            
+            // Update UI with both current and forecast
+            updateWeatherUI(combinedData);
+            
+        } catch (error) {
+            console.error('Weather fetch error:', error);
+            showLocationErrorWithChangeLink();
+        }
+    }
+
+    /**
+     * Show location error message with Change Location link
+     */
+    function showLocationErrorWithChangeLink() {
+        weatherBox.innerHTML = `
+            <div style="text-align: center; padding: 20px;">
+                <i class="fas fa-map-marker-alt" style="color: var(--accent-orange); font-size: 2rem; margin-bottom: 12px; display: block;"></i>
+                <p style="color: var(--text-light); margin-bottom: 12px;">
+                    Unable to detect your location or fetch weather data.
+                </p>
+                <p style="margin-top: 16px;">
+                    <a href="#" id="changeLocationLinkError" style="color: var(--primary-green); font-size: 0.9rem; text-decoration: none; border-bottom: 1px dashed var(--primary-green); cursor: pointer; font-weight: 600;">
+                        Change Location
+                    </a>
+                </p>
+            </div>
+        `;
+
+        // Attach click handler
+        const changeLink = document.getElementById('changeLocationLinkError');
+        if (changeLink) {
+            changeLink.addEventListener('click', function(e) {
+                e.preventDefault();
+                showLocationInput();
+            });
+        }
+    }
+
+    /**
+     * Fetch weather using city name (with forecast)
+     */
+    async function fetchWeatherByCityWithForecast(cityName) {
+        // First geocode to get coordinates, then fetch weather with coordinates
+        const coords = await geocodeCityName(cityName);
+        if (coords) {
+            await fetchWeatherByCoordinates(coords.lat, coords.lon);
+        } else {
+            // If geocoding fails, try direct API call
+            try {
+                const url = `https://api.openweathermap.org/data/2.5/weather?q=${encodeURIComponent(cityName)}&appid=${apiKey}&units=metric`;
+                const response = await fetch(url);
+                const currentData = await response.json();
+                
+                if (currentData.cod === 200) {
+                    // Try to get forecast using city name
+                    const forecastUrl = `https://api.openweathermap.org/data/2.5/forecast?q=${encodeURIComponent(cityName)}&appid=${apiKey}&units=metric`;
+                    const forecastResponse = await fetch(forecastUrl);
+                    const forecastData = await forecastResponse.json();
+                    
+                    const combinedData = {
+                        current: currentData,
+                        forecast: forecastData.cod === '200' ? forecastData : null
+                    };
+                    
+                    try {
+                        localStorage.setItem('weatherData', JSON.stringify(combinedData));
+                        localStorage.setItem('weatherDataTime', Date.now().toString());
+                    } catch (e) {
+                        console.warn('Error caching weather data:', e);
+                    }
+                    
+                    updateWeatherUI(combinedData);
+                }
+            } catch (error) {
+                console.error('Weather fetch error:', error);
+                showLocationErrorWithChangeLink();
+            }
+        }
+    }
+
+    /**
+     * Get location using browser geolocation with HIGH ACCURACY
+     */
+    function getLocation() {
+        if (navigator.geolocation) {
+            navigator.geolocation.getCurrentPosition(
+                function(position) {
+                    const lat = position.coords.latitude;
+                    const lon = position.coords.longitude;
+                    console.log('GPS location detected (high accuracy):', lat, lon);
+                    
+                    // Always use coordinates from GPS, never city names
+                    fetchWeatherByCoordinates(lat, lon);
+                },
+                function(error) {
+                    console.warn(`Location error (${error.code}): ${error.message}`);
+                    
+                    // Check for manual location first
+                    const manualLocation = getManualLocation();
+                    if (manualLocation) {
+                        console.log('Using manual location:', manualLocation);
+                        fetchWeatherByCityWithForecast(manualLocation);
+                        return;
+                    }
+                    
+                    // Check for database coordinates as fallback
+                    if (!isNaN(userLat) && !isNaN(userLon) && userLat !== 0 && userLon !== 0) {
+                        console.log('Using database coordinates as fallback:', userLat, userLon);
+                        fetchWeatherByCoordinates(userLat, userLon);
+                        return;
+                    }
+                    
+                    // Show error with Change Location option
+                    showLocationErrorWithChangeLink();
+                },
+                { 
+                    enableHighAccuracy: true,  // Force GPS/WiFi, not IP-based location
+                    timeout: 10000,            // 10 second timeout
+                    maximumAge: 0              // Always get fresh location, never use cached
+                }
+            );
+        } else {
+            console.warn('Geolocation is not supported by this browser.');
+            
+            // Check for manual location
+            const manualLocation = getManualLocation();
+            if (manualLocation) {
+                fetchWeatherByCityWithForecast(manualLocation);
+                return;
+            }
+            
+            // Check for database coordinates
+            if (!isNaN(userLat) && !isNaN(userLon) && userLat !== 0 && userLon !== 0) {
+                fetchWeatherByCoordinates(userLat, userLon);
+                return;
+            }
+            
+            showLocationErrorWithChangeLink();
+        }
+    }
+
+    // Priority 1: Check for cached weather data
+    const cached = getCachedWeather();
+    if (cached) {
+        console.log('Using cached weather data');
+        updateWeatherUI(cached);
+        
+        // Still fetch fresh data in background (but don't block UI)
+        getLocation();
+    } else {
+        // Priority 2: Check for manual location
+        const manualLocation = getManualLocation();
+        if (manualLocation) {
+            console.log('Using manual location:', manualLocation);
+            fetchWeatherByCityWithForecast(manualLocation);
+        } else {
+            // Priority 3: Try GPS location
+            getLocation();
+        }
+    }
+});
+</script>
+
+<script>
+/* ================= NOTIFICATIONS ================= */
+function attachMarkBtnEvents() {
+    document.querySelectorAll('.mark-btn').forEach(btn => {
+        btn.addEventListener('click', function () {
+
+            const notifId = this.dataset.id;
+            const li = this.closest('li');
+
+            fetch('mark_notification.php', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                body: 'id=' + encodeURIComponent(notifId)
+            })
+            .then(res => res.json())
+            .then(data => {
+                if (data.status === 'success') {
+                    li.classList.remove('unread');
+                    li.classList.add('read');
+                    this.remove();
+                }
+            });
+        });
+    });
+}
+
+// Initial attach
+attachMarkBtnEvents();
+
+// Polling
+setInterval(() => {
+    fetch('fetch_notifications.php')
+        .then(res => res.text())
+        .then(html => {
+            const ul = document.querySelector('.notification-list');
+            if (ul) {
+                ul.innerHTML = html;
+                attachMarkBtnEvents();
+            }
+        });
+}, 30000);
+</script>
+
+<script>
+/* ================= PROFILE MODAL ================= */
+function openProfileModal() {
+    const modal = document.getElementById('profileModal');
+    if (modal) {
+        modal.classList.add('active');
+        document.body.style.overflow = 'hidden'; // Prevent background scrolling
+        // Clear any previous messages
+        const msgDiv = document.getElementById('profileMessage');
+        if (msgDiv) {
+            msgDiv.style.display = 'none';
+            msgDiv.textContent = '';
+        }
+    }
+}
+
+function closeProfileModal() {
+    const modal = document.getElementById('profileModal');
+    if (modal) {
+        modal.classList.remove('active');
+        document.body.style.overflow = 'auto'; // Restore scrolling
+    }
+}
+
+// Close modal when clicking outside the modal content
+document.addEventListener('click', function(event) {
+    const modal = document.getElementById('profileModal');
+    if (modal && event.target === modal) {
+        closeProfileModal();
+    }
+});
+
+// Close modal with Escape key
+document.addEventListener('keydown', function(event) {
+    if (event.key === 'Escape') {
+        closeProfileModal();
+        closeSidebar(); // Also close sidebar if open
+    }
+});
+
+// Handle profile form submission
+document.addEventListener('DOMContentLoaded', function() {
+    const profileForm = document.getElementById('profileForm');
+    const profileMessage = document.getElementById('profileMessage');
+    
+    if (profileForm) {
+        profileForm.addEventListener('submit', async function(e) {
+            e.preventDefault();
+            
+            const formData = new FormData(profileForm);
+            const submitBtn = profileForm.querySelector('button[type="submit"]');
+            const originalText = submitBtn.innerHTML;
+            
+            // Disable submit button
+            submitBtn.disabled = true;
+            const savingText = '<?php echo $translations['saving'] ?? 'Saving...'; ?>';
+            submitBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> ' + savingText;
+            
+            // Hide previous messages
+            if (profileMessage) {
+                profileMessage.style.display = 'none';
+            }
+            
+            try {
+                const response = await fetch('update_profile.php', {
+                    method: 'POST',
+                    body: formData
+                });
+                
+                const result = await response.json();
+                
+                if (result.status === 'success') {
+                    // Show success message
+                    if (profileMessage) {
+                        profileMessage.style.display = 'block';
+                        profileMessage.style.background = '#e6ffef';
+                        profileMessage.style.color = '#0b6623';
+                        profileMessage.style.border = '1px solid #c8e6c9';
+                        profileMessage.innerHTML = '<i class="fas fa-check-circle"></i> ' + result.message;
+                    }
+                    
+                    // Update the header welcome message
+                    const headerName = document.querySelector('.header h1');
+                    if (headerName) {
+                        const newName = document.getElementById('profile_fullname').value;
+                        const helloText = '<?php echo $translations['hello'] ?? 'Hello'; ?>';
+                        headerName.innerHTML = helloText + ', ' + newName + '! 👋';
+                    }
+                    
+                    // Update district in welcome section
+                    const welcomeDistrict = document.querySelector('.welcome');
+                    if (welcomeDistrict) {
+                        const newDistrict = document.getElementById('profile_district').value;
+                        const districtText = '<?php echo $translations['district'] ?? 'District'; ?>';
+                        welcomeDistrict.innerHTML = '<i class="fas fa-map-marker-alt"></i> ' + districtText + ': ' + newDistrict;
+                    }
+                    
+                    // Close modal after 1.5 seconds
+                    setTimeout(() => {
+                        closeProfileModal();
+                        // Reload page to reflect all changes
+                        window.location.reload();
+                    }, 1500);
+                } else {
+                    // Show error message
+                    if (profileMessage) {
+                        profileMessage.style.display = 'block';
+                        profileMessage.style.background = '#ffe6e6';
+                        profileMessage.style.color = '#7a0000';
+                        profileMessage.style.border = '1px solid #fcc';
+                        profileMessage.innerHTML = '<i class="fas fa-exclamation-circle"></i> ' + result.message;
+                    }
+                    
+                    // Re-enable submit button
+                    submitBtn.disabled = false;
+                    submitBtn.innerHTML = originalText;
+                }
+            } catch (error) {
+                console.error('Error:', error);
+                if (profileMessage) {
+                    profileMessage.style.display = 'block';
+                    profileMessage.style.background = '#ffe6e6';
+                    profileMessage.style.color = '#7a0000';
+                    profileMessage.style.border = '1px solid #fcc';
+                    const errorText = '<?php echo $translations['profile_update_failed'] ?? 'Failed to update profile. Please try again.'; ?>';
+                    profileMessage.innerHTML = '<i class="fas fa-exclamation-circle"></i> ' + errorText;
+                }
+                
+                // Re-enable submit button
+                submitBtn.disabled = false;
+                submitBtn.innerHTML = originalText;
+            }
+        });
+    }
+});
+</script>
+
+<script>
+/* ================= MOBILE SIDEBAR TOGGLE ================= */
+// Make functions globally accessible
+window.toggleSidebar = function() {
+    const sidebar = document.querySelector('.sidebar');
+    const overlay = document.getElementById('sidebarOverlay');
+    const menuIcon = document.getElementById('menuIcon');
+    const body = document.body;
+
+    if (sidebar && overlay) {
+        const isActive = sidebar.classList.contains('active');
+        
+        if (isActive) {
+            sidebar.classList.remove('active');
+            overlay.classList.remove('active');
+            body.classList.remove('sidebar-open');
+            if (menuIcon) {
+                menuIcon.classList.remove('fa-times');
+                menuIcon.classList.add('fa-bars');
+            }
+        } else {
+            sidebar.classList.add('active');
+            overlay.classList.add('active');
+            body.classList.add('sidebar-open');
+            if (menuIcon) {
+                menuIcon.classList.remove('fa-bars');
+                menuIcon.classList.add('fa-times');
+            }
+        }
+    }
+};
+
+window.closeSidebar = function() {
+    const sidebar = document.querySelector('.sidebar');
+    const overlay = document.getElementById('sidebarOverlay');
+    const menuIcon = document.getElementById('menuIcon');
+    const body = document.body;
+
+    if (sidebar && overlay) {
+        sidebar.classList.remove('active');
+        overlay.classList.remove('active');
+        body.classList.remove('sidebar-open');
+
+        // Change icon back to hamburger
+        if (menuIcon) {
+            menuIcon.classList.remove('fa-times');
+            menuIcon.classList.add('fa-bars');
+        }
+    }
+};
+
+// Close sidebar when clicking on a sidebar link (mobile)
+document.addEventListener('DOMContentLoaded', function() {
+    // Function to handle sidebar link clicks - simplified
+    function handleSidebarClick(e) {
+        // Only close on mobile
+        if (window.innerWidth <= 768) {
+            // Small delay to allow the click to complete first
+            setTimeout(() => {
+                closeSidebar();
+            }, 150);
+        }
+    }
+    
+    // Use event delegation for better performance and reliability
+    const sidebar = document.querySelector('.sidebar');
+    if (sidebar) {
+        // Handle clicks on any link or button in sidebar (bubble phase, not capture)
+        sidebar.addEventListener('click', function(e) {
+            const target = e.target.closest('a, button, .logout-btn, form');
+            
+            // Skip if clicking on close button (it has its own handler)
+            if (target && target.classList.contains('sidebar-close')) {
+                return;
+            }
+            
+            // Only close on mobile
+            if (target && window.innerWidth <= 768) {
+                // Don't prevent default - let the link/button work normally
+                // Use a longer delay to ensure onclick handlers execute first
+                setTimeout(() => {
+                    closeSidebar();
+                }, 300);
+            }
+        }, false); // Use bubble phase (default) to allow onclick handlers to fire first
+    }
+    
+    // Ensure hamburger button works - with multiple event types for mobile
+    const menuToggle = document.getElementById('menuToggle');
+    if (menuToggle) {
+        // Remove any existing listeners by cloning
+        const newToggle = menuToggle.cloneNode(true);
+        menuToggle.parentNode.replaceChild(newToggle, menuToggle);
+        
+        // Click event (works for both mouse and touch on modern devices)
+        newToggle.addEventListener('click', function(e) {
+            e.preventDefault();
+            e.stopPropagation();
+            e.stopImmediatePropagation();
+            if (window.toggleSidebar) {
+                window.toggleSidebar();
+            }
+        }, true); // Use capture phase
+        
+        // Touch events for better mobile support
+        newToggle.addEventListener('touchstart', function(e) {
+            e.stopPropagation();
+            this.style.opacity = '0.8';
+            this.style.transform = 'scale(0.95)';
+        }, { passive: true });
+        
+        newToggle.addEventListener('touchend', function(e) {
+            e.preventDefault();
+            e.stopPropagation();
+            e.stopImmediatePropagation();
+            this.style.opacity = '1';
+            this.style.transform = '';
+            if (window.toggleSidebar) {
+                window.toggleSidebar();
+            }
+        }, { passive: false });
+        
+        // Prevent double-firing
+        let isToggling = false;
+        const originalToggle = window.toggleSidebar;
+        window.toggleSidebar = function() {
+            if (!isToggling) {
+                isToggling = true;
+                originalToggle();
+                setTimeout(() => {
+                    isToggling = false;
+                }, 300);
+            }
+        };
+    }
+    
+    // Handle overlay clicks
+    const overlay = document.getElementById('sidebarOverlay');
+    if (overlay) {
+        overlay.addEventListener('click', function(e) {
+            if (e.target === overlay) {
+                closeSidebar();
+            }
+        });
+    }
+});
+
+// Close sidebar on window resize if it becomes desktop view
+window.addEventListener('resize', function() {
+    if (window.innerWidth > 768) {
+        closeSidebar();
+    }
+});
+</script>
+</div>
+</div>
+
+</body>
+</html>
+
