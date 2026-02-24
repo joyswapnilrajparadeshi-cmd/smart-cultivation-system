@@ -144,16 +144,40 @@ smart-cultivation-system/
 
 ## ⚙ Installation  
 
+1. Clone the repository:  
 ```bash
 git clone https://github.com/joyswapnilrajparadeshi-cmd/smart-cultivation-system.git
 
-Import smart_cultivation.sql into MySQL
+Import smart_cultivation.sql into MySQL.
 
-Update db_connection.php
+Update db_connection.php with your database credentials.
 
-Start XAMPP / WAMP / LAMP
+Start XAMPP / WAMP / LAMP.
 
-Open: http://localhost/smart-cultivation-system/
+Open in browser: http://localhost/smart-cultivation-system/
+
+💡 Future Enhancements
+
+AI-based crop disease detection
+
+Yield prediction system
+
+Mobile application
+
+Cloud deployment
+
+👨‍💻 Author
+
+Paradeshi Joy Swapnil Raj
+B.Tech CSE | Full Stack Developer | AI & ML Enthusiast
+
+📧 Email: joyswapnilrajparadeshi@gmail.com
+
+🌐 Portfolio: https://joyswapnilrajparadeshi-cmd.github.io/portfolio/
+
+📜 License
+
+Open-source for educational and research use.
 
 
 ---
