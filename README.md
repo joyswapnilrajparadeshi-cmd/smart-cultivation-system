@@ -155,8 +155,3 @@ Update db_connection.php with your database credentials.
 Start XAMPP / WAMP / LAMP.
 
 Open in browser: http://localhost/smart-cultivation-system/
-
-
----
-
-.
