@@ -2,8 +2,7 @@
 ### AI-Ready Smart Agriculture Management Platform  
 
 [![Live Demo](https://img.shields.io/badge/Live-Demo-green?style=for-the-badge&logo=google-chrome&logoColor=white)](https://smart-cultivation.kesug.com)  
-[![Tech](https://img.shields.io/badge/Tech-Full%20Stack%20%7C%20ML%20Ready-blueviolet?style=for-the-badge)](#)  
-
+[![Tech](https://img.shields.io/badge/Tech-Full%20Stack%20%7C%20Scalable-blueviolet?style=for-the-badge)](#)
 <img width="1883" height="758" alt="Smart Cultivation System Dashboard" src="https://github.com/user-attachments/assets/593afbe2-e835-441e-ab2c-5b3a4adf925f" />
 
 ---
