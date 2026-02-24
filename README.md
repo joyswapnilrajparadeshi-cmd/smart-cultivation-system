@@ -154,7 +154,7 @@ Update db_connection.php
 Start XAMPP / WAMP / LAMP
 
 Open: http://localhost/smart-cultivation-system/
-
+---
 ## 💡 Future Enhancements
 
 AI-based crop disease detection
@@ -174,7 +174,7 @@ B.Tech CSE | Full Stack Developer | AI & ML Enthusiast
 
 📧 Email: [joyswapnilrajparadeshi@gmail.com](mailto:joyswapnilrajparadeshi@gmail.com)  
 🌐 Portfolio: [https://joyswapnilrajparadeshi-cmd.github.io/portfolio/](https://joyswapnilrajparadeshi-cmd.github.io/portfolio/)
-
+---
 ## 📜 License
 
 Open-source for educational and research use.
