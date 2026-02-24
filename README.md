@@ -141,10 +141,4 @@ Open-source for educational and research use.
 
 ---
 
-If you want, next we can create **TOP 1% README** for:
 
-🔥 community-complaint-system  
-🔥 leave-management-system  
-🔥 crop-disease-detection-ml  
-
-Just say **NEXT** 😄
