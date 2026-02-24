@@ -154,9 +154,9 @@ Update db_connection.php
 Start XAMPP / WAMP / LAMP
 
 Open: http://localhost/smart-cultivation-system/
+
+
 ---
-
-
 
 
 💡 Future Enhancements
