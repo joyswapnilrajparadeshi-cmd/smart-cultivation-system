@@ -24,11 +24,30 @@ The system provides real-time crop tracking, intelligent notifications, knowledg
 ## 🏗 System Architecture  
 
 
-Farmer Dashboard ─────┐
-├──> PHP Backend ───> MySQL Database
-Admin Dashboard ─────┘
-│
-└──> Notification Engine (PHPMailer SMTP)
+┌─────────────────────┐        HTTP Requests        ┌────────────────────────┐
+│   Farmer Dashboard  │ ─────────────────────────▶ │                        │
+└─────────────────────┘                             │                        │
+                                                     │                        │
+┌─────────────────────┐        HTTP Requests        │     PHP Backend        │
+│    Admin Dashboard  │ ─────────────────────────▶ │  (Business Logic +     │
+└─────────────────────┘                             │   Authentication +     │
+                                                     │   Access Control)     │
+                                                     │                        │
+                                                     └───────────┬────────────┘
+                                                                 │
+                                                                 │ SQL Queries
+                                                                 ▼
+                                                     ┌────────────────────────┐
+                                                     │     MySQL Database     │
+                                                     │   (Persistent Storage) │
+                                                     └────────────────────────┘
+                                                                 │
+                                                                 │ Event Triggers
+                                                                 ▼
+                                                     ┌────────────────────────┐
+                                                     │   PHPMailer Service    │
+                                                     │ (SMTP Email Delivery)  │
+                                                     └────────────────────────┘
 
 
 ---
@@ -88,16 +107,38 @@ Repository: **crop-disease-detection-ml**
 
 smart-cultivation-system/
 ├── PHPMailer-master/
+│   └── ... (PHPMailer library files)
+├── add_crop.php
+├── admin_add_crop.php
 ├── admin_dashboard.php
-├── farmer_dashboard.php
+├── admin_delete_crop.php
+├── admin_update_stage.php
 ├── crop_management.php
-├── knowledge_base.php
-├── login.php
-├── register.php
 ├── db_connection.php
+├── delete_crop.php
+├── delete_farmer.php
+├── edit_crop.php
+├── edit_farmer.php
+├── farmer_dashboard.php
+├── farmer_reports.php
+├── farmers_admin.php
+├── fetch_notifications.php
+├── index.php
+├── knowledge_base.php
+├── knowledge_base_admin.php
+├── languages/
+├── login.php
+├── logout.php
+├── mark_notification.php
+├── notifications_admin.php
+├── register.php
 ├── smart_cultivation.sql
+├── toggle_farmer.php
+├── update_profile.php
+├── update_stage.php
+├── .gitmodules
+├── README.md
 └── ...
-
 
 ---
 
