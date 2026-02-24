@@ -156,29 +156,6 @@ Start XAMPP / WAMP / LAMP.
 
 Open in browser: http://localhost/smart-cultivation-system/
 
-💡 Future Enhancements
-
-AI-based crop disease detection
-
-Yield prediction system
-
-Mobile application
-
-Cloud deployment
-
-👨‍💻 Author
-
-Paradeshi Joy Swapnil Raj
-B.Tech CSE | Full Stack Developer | AI & ML Enthusiast
-
-📧 Email: joyswapnilrajparadeshi@gmail.com
-
-🌐 Portfolio: https://joyswapnilrajparadeshi-cmd.github.io/portfolio/
-
-📜 License
-
-Open-source for educational and research use.
-
 
 ---
 
